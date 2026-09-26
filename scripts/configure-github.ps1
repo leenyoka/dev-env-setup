@@ -10,7 +10,15 @@ if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
     exit 0
 }
 
-gh config set git_protocol https
+$sshKeyPath = Join-Path $HOME ".ssh\id_ed25519"
+
+if (Test-Path $sshKeyPath) {
+    Write-Host "Existing SSH key found - leaving GitHub CLI's git_protocol unchanged." -ForegroundColor Yellow
+}
+else {
+    gh config set git_protocol https
+    Write-Host "git_protocol set to https (no SSH key found)." -ForegroundColor Green
+}
 
 Write-Host ""
 Write-Host "GitHub CLI is installed." -ForegroundColor Green

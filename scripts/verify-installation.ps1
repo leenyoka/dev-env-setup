@@ -1,7 +1,21 @@
 [CmdletBinding()]
-param()
+param(
+    [ValidateSet(
+        "Minimal",
+        "DotNet",
+        "Frontend",
+        "Azure",
+        "Docker",
+        "Database",
+        "FullStack"
+    )]
+    [string] $Profile
+)
 
 $ErrorActionPreference = "Continue"
+
+. (Join-Path $PSScriptRoot "profile-definitions.ps1")
+$profileDefinitions = Get-ProfileDefinitions
 
 Write-Host ""
 Write-Host "============================================" -ForegroundColor Cyan
@@ -25,10 +39,18 @@ $tools = @(
     @{ Name = "psql"; DisplayName = "PostgreSQL" }
 )
 
+$requiredNames = @()
+
+if ($Profile -and $profileDefinitions.Contains($Profile)) {
+    $requiredNames = $profileDefinitions[$Profile].RequiredTools |
+        ForEach-Object { $_.Name }
+}
+
 $failed = 0
 
 foreach ($tool in $tools) {
     $command = Get-Command $tool.Name -ErrorAction SilentlyContinue
+    $isRequired = $requiredNames -contains $tool.Name
 
     if ($command) {
         try {
@@ -42,6 +64,12 @@ foreach ($tool in $tools) {
         Write-Host (
             "{0,-20} [OK] {1}" -f $tool.DisplayName, $version
         ) -ForegroundColor Green
+    }
+    elseif ($isRequired) {
+        Write-Host (
+            "{0,-20} [FAIL] Required by the $Profile profile but not found" -f $tool.DisplayName
+        ) -ForegroundColor Red
+        $failed++
     }
     else {
         Write-Host (

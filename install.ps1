@@ -21,6 +21,10 @@ $ErrorActionPreference = "Stop"
 $scriptRoot = $PSScriptRoot
 $scriptsPath = Join-Path $scriptRoot "scripts"
 $profilesPath = Join-Path $scriptRoot "profiles"
+$logsPath = Join-Path $scriptRoot "logs"
+
+. (Join-Path $scriptsPath "profile-definitions.ps1")
+$profileDefinitions = Get-ProfileDefinitions
 
 function Test-IsAdministrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -45,10 +49,6 @@ function Invoke-Elevated {
         $arguments += " -NonInteractive"
     }
 
-    if ($WhatIf) {
-        $arguments += " -WhatIf"
-    }
-
     Start-Process `
         -FilePath "powershell.exe" `
         -ArgumentList $arguments `
@@ -61,46 +61,40 @@ function Select-Profile {
     Write-Host ""
     Write-Host "Select development profile:" -ForegroundColor Cyan
     Write-Host ""
-    Write-Host "  1. Minimal"
-    Write-Host "  2. .NET Developer"
-    Write-Host "  3. Frontend Developer"
-    Write-Host "  4. Azure Developer"
-    Write-Host "  5. Docker / DevOps"
-    Write-Host "  6. Database Developer"
-    Write-Host "  7. Full Stack"
+
+    $ordered = $profileDefinitions.GetEnumerator() |
+        Sort-Object { $_.Value.Number }
+
+    foreach ($entry in $ordered) {
+        Write-Host ("  {0}. {1}" -f $entry.Value.Number, $entry.Value.Menu)
+    }
+
     Write-Host ""
 
+    $maxNumber = ($ordered | ForEach-Object { $_.Value.Number } | Measure-Object -Maximum).Maximum
+
     do {
-        $selection = Read-Host "Selection [1-7]"
+        $selection = Read-Host "Selection [1-$maxNumber]"
 
-        $Profile = switch ($selection) {
-            "1" { "Minimal" }
-            "2" { "DotNet" }
-            "3" { "Frontend" }
-            "4" { "Azure" }
-            "5" { "Docker" }
-            "6" { "Database" }
-            "7" { "FullStack" }
-            default { $null }
-        }
+        $match = $ordered | Where-Object { "$($_.Value.Number)" -eq $selection.Trim() }
 
-        if (-not $Profile) {
+        if (-not $match) {
             Write-Host "Invalid selection." -ForegroundColor Yellow
         }
     }
-    while (-not $Profile)
+    while (-not $match)
 
-    return $Profile
+    return $match.Key
 }
 
 function Test-RequiredFiles {
     $requiredFiles = @(
+        "profile-definitions.ps1",
         "install-chocolatey.ps1",
         "install-packages.ps1",
         "configure-windows.ps1",
         "configure-git.ps1",
         "configure-powershell.ps1",
-        "configure-dev-tools.ps1",
         "configure-dotnet.ps1",
         "configure-node.ps1",
         "configure-azure.ps1",
@@ -147,15 +141,6 @@ Write-Host "     Windows Developer Environment Setup" -ForegroundColor Cyan
 Write-Host "============================================" -ForegroundColor Cyan
 Write-Host ""
 
-if (-not (Test-IsAdministrator)) {
-    Invoke-Elevated
-}
-
-Set-ExecutionPolicy `
-    -Scope Process `
-    -ExecutionPolicy Bypass `
-    -Force
-
 Test-RequiredFiles
 
 if (-not $Profile) {
@@ -174,105 +159,79 @@ if ($WhatIf) {
     Write-Host ""
     Write-Host "DRY RUN - no changes will be made." -ForegroundColor Yellow
     Write-Host ""
-
-    switch ($Profile) {
-        "Minimal" {
-            Write-Host "Would install common developer tools."
-        }
-
-        "DotNet" {
-            Write-Host "Would install common + .NET tooling."
-        }
-
-        "Frontend" {
-            Write-Host "Would install common + frontend tooling."
-        }
-
-        "Azure" {
-            Write-Host "Would install common + Azure tooling."
-        }
-
-        "Docker" {
-            Write-Host "Would install common + Docker tooling."
-        }
-
-        "Database" {
-            Write-Host "Would install common + database tooling."
-        }
-
-        "FullStack" {
-            Write-Host "Would install common + .NET + frontend + Azure + Docker + database tooling."
-        }
-    }
-
+    Write-Host $profileDefinitions[$Profile].DryRun
     exit 0
 }
 
-Write-Host ""
-Write-Host "[1/5] Installing Chocolatey..." -ForegroundColor Cyan
-Invoke-Script (Join-Path $scriptsPath "install-chocolatey.ps1")
+# Everything past this point makes real changes and needs elevation.
+if (-not (Test-IsAdministrator)) {
+    Invoke-Elevated
+}
 
-Write-Host ""
-Write-Host "[2/5] Installing common packages..." -ForegroundColor Cyan
-Invoke-Script `
-    (Join-Path $scriptsPath "install-packages.ps1") `
-    @("-ConfigPath", (Join-Path $scriptRoot "config\packages.config"))
+Set-ExecutionPolicy `
+    -Scope Process `
+    -ExecutionPolicy Bypass `
+    -Force
 
-Write-Host ""
-Write-Host "[3/5] Configuring Windows..." -ForegroundColor Cyan
-Invoke-Script (Join-Path $scriptsPath "configure-windows.ps1")
+if (-not (Test-Path $logsPath)) {
+    New-Item -ItemType Directory -Path $logsPath -Force | Out-Null
+}
 
-Write-Host ""
-Write-Host "[4/5] Configuring developer environment..." -ForegroundColor Cyan
+$logFile = Join-Path $logsPath "setup-$(Get-Date -Format 'yyyyMMdd-HHmmss').log"
 
-Invoke-Script (Join-Path $scriptsPath "configure-git.ps1")
-Invoke-Script (Join-Path $scriptsPath "configure-powershell.ps1")
-Invoke-Script (Join-Path $scriptsPath "configure-dev-tools.ps1")
-Invoke-Script (Join-Path $scriptsPath "configure-terminal.ps1")
-Invoke-Script (Join-Path $scriptsPath "configure-environment.ps1")
-Invoke-Script (Join-Path $scriptsPath "configure-ssh.ps1")
-Invoke-Script (Join-Path $scriptsPath "configure-github.ps1")
+Start-Transcript -Path $logFile -Append | Out-Null
+Write-Host "Logging this run to: $logFile" -ForegroundColor DarkGray
 
-Write-Host ""
-Write-Host "[5/5] Applying $Profile profile..." -ForegroundColor Cyan
+try {
+    Write-Host ""
+    Write-Host "[1/5] Installing Chocolatey..." -ForegroundColor Cyan
+    Invoke-Script (Join-Path $scriptsPath "install-chocolatey.ps1")
 
-switch ($Profile) {
-    "Minimal" {
+    Write-Host ""
+    Write-Host "[2/5] Installing common packages..." -ForegroundColor Cyan
+    Invoke-Script `
+        (Join-Path $scriptsPath "install-packages.ps1") `
+        @("-ConfigPath", (Join-Path $scriptRoot "config\packages.config"))
+
+    Write-Host ""
+    Write-Host "[3/5] Configuring Windows..." -ForegroundColor Cyan
+    Invoke-Script (Join-Path $scriptsPath "configure-windows.ps1")
+
+    Write-Host ""
+    Write-Host "[4/5] Configuring developer environment..." -ForegroundColor Cyan
+
+    Invoke-Script (Join-Path $scriptsPath "configure-git.ps1")
+    Invoke-Script (Join-Path $scriptsPath "configure-powershell.ps1")
+    Invoke-Script (Join-Path $scriptsPath "configure-terminal.ps1")
+    Invoke-Script (Join-Path $scriptsPath "configure-environment.ps1")
+    Invoke-Script (Join-Path $scriptsPath "configure-ssh.ps1")
+    Invoke-Script (Join-Path $scriptsPath "configure-github.ps1")
+
+    Write-Host ""
+    Write-Host "[5/5] Applying $Profile profile..." -ForegroundColor Cyan
+
+    $scriptFile = $profileDefinitions[$Profile].ScriptFile
+
+    if ($scriptFile) {
+        Invoke-Script (Join-Path $profilesPath $scriptFile)
+    }
+    else {
         Write-Host "Minimal profile complete."
     }
 
-    "DotNet" {
-        Invoke-Script (Join-Path $profilesPath "dotnet.ps1")
-    }
+    Write-Host ""
+    Write-Host "Verifying installation..." -ForegroundColor Cyan
 
-    "Frontend" {
-        Invoke-Script (Join-Path $profilesPath "frontend.ps1")
-    }
+    Invoke-Script `
+        (Join-Path $scriptsPath "verify-installation.ps1") `
+        @("-Profile", $Profile)
 
-    "Azure" {
-        Invoke-Script (Join-Path $profilesPath "azure.ps1")
-    }
-
-    "Docker" {
-        Invoke-Script (Join-Path $profilesPath "docker.ps1")
-    }
-
-    "Database" {
-        Invoke-Script (Join-Path $profilesPath "database.ps1")
-    }
-
-    "FullStack" {
-        Invoke-Script (Join-Path $profilesPath "fullstack.ps1")
-    }
+    Write-Host ""
+    Write-Host "============================================" -ForegroundColor Green
+    Write-Host " Developer environment setup complete!" -ForegroundColor Green
+    Write-Host "============================================" -ForegroundColor Green
+    Write-Host ""
 }
-
-Write-Host ""
-Write-Host "Verifying installation..." -ForegroundColor Cyan
-
-Invoke-Script (Join-Path $scriptsPath "verify-installation.ps1")
-
-Write-Host ""
-Write-Host "============================================" -ForegroundColor Green
-Write-Host " Developer environment setup complete!" -ForegroundColor Green
-Write-Host "============================================" -ForegroundColor Green
-Write-Host ""
+finally {
+    Stop-Transcript | Out-Null
+}
